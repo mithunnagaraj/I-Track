@@ -1,0 +1,28 @@
+{
+  "appId": "com.itrack.app",
+  "productName": "I-Track",
+  "files": ["dist/**/*", "package.json", "node_modules/**/*"],
+  "directories": {
+    "buildResources": "electron-builder-config/icons",
+    "output": "release"
+  },
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64", "ia32"] }]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true
+  },
+  "mac": {
+    "target": ["dmg", "zip"],
+    "category": "public.app-category.utilities"
+  },
+  "dmg": {
+    "contents": [
+      { "x": 130, "y": 220, "type": "file" },
+      { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+    ]
+  }
+}
