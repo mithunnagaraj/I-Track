@@ -20,6 +20,17 @@ export interface AppSettings {
   autoCalibrationPrompt: boolean
   calibrationRecency: number
   screenIndex: number
+  mouseSpeed: number
+  gazeGainX: number
+  gazeGainY: number
+  offsetX: number
+  offsetY: number
+  baselineX: number
+  baselineY: number
+  headGainX: number
+  headGainY: number
+  invertX: boolean
+  invertY: boolean
 }
 
 export interface DesktopApi {

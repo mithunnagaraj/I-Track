@@ -10,6 +10,9 @@ When using this repo in Copilot chat:
 - Provide the exact command(s) for me to run locally.
 - Wait for my output, then continue based on my results.
 
+For token-saving handoff in new chats, use:
+- `CHAT_BOOTSTRAP.md` (minimal context + starter prompt)
+
 ## Root
 
 - `package.json` - scripts, dependencies, Electron entry (`dist/main/main.js`)

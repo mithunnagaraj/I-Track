@@ -1,37 +1,40 @@
 import { useEffect, useRef } from 'react'
-import { calibrationService } from '../services/calibrationService'
 import { ipcService } from '../services/ipcService'
 import type { GazePoint } from '../types/gaze'
 
 export const useMouseControl = (
   enabled: boolean,
   gazePoint: GazePoint | null,
-  minConfidence = 0.7,
-  smoothing = 0.3
+  minConfidence = 0.35,
+  smoothing = 0.3,
+  mouseSpeed = 1.0
 ): void => {
   const previousRef = useRef<{ x: number; y: number } | null>(null)
   const screenRef = useRef<{ width: number; height: number } | null>(null)
   const latestGazeRef = useRef<GazePoint | null>(null)
   const frameRef = useRef<number | null>(null)
   const lastTickRef = useRef(0)
-  const calibrationRef = useRef<Awaited<ReturnType<typeof calibrationService.loadCalibration>>>(null)
 
   useEffect(() => {
     latestGazeRef.current = gazePoint
   }, [gazePoint])
 
   useEffect(() => {
-    if (!enabled) return
+    if (!enabled) {
+      previousRef.current = null
+      return
+    }
     let cancelled = false
 
     const initialize = async () => {
-      const [screenSize, matrix] = await Promise.all([
-        ipcService.getScreenSize(),
-        calibrationService.loadCalibration()
-      ])
-      if (cancelled) return
-      screenRef.current = screenSize
-      calibrationRef.current = matrix
+      try {
+        const screenSize = await ipcService.getScreenSize()
+        if (cancelled) return
+        screenRef.current = screenSize
+      } catch {
+        // Fallback to window dimensions if desktop IPC is mocked/unavailable
+        screenRef.current = { width: window.innerWidth, height: window.innerHeight }
+      }
     }
 
     void initialize()
@@ -42,25 +45,32 @@ export const useMouseControl = (
         void tick(nextTime)
       })
 
-      if (time - lastTickRef.current < 1000 / 30) return
+      // Throttle mouse moves to ~30-40 Hz to avoid flooding OS event loop
+      if (time - lastTickRef.current < 25) return
       lastTickRef.current = time
 
       const current = latestGazeRef.current
       const screen = screenRef.current
       if (!current || !screen || current.confidence < minConfidence) return
 
-      const calibrated = calibrationService.applyCalibration(
-        { x: current.rawX ?? current.x, y: current.rawY ?? current.y },
-        calibrationRef.current
-      )
-      const previous = previousRef.current ?? calibrated
+      // Apply mouse movement speed scaling from center
+      const speed = Math.max(0.2, mouseSpeed)
+      const scaledX = Math.max(0, Math.min(1, 0.5 + (current.x - 0.5) * speed))
+      const scaledY = Math.max(0, Math.min(1, 0.5 + (current.y - 0.5) * speed))
+
+      const previous = previousRef.current ?? { x: scaledX, y: scaledY }
+      const smoothWeight = Math.max(0.05, Math.min(0.9, 1 - smoothing))
       const smoothed = {
-        x: smoothing * calibrated.x + (1 - smoothing) * previous.x,
-        y: Math.min(0.2, smoothing) * calibrated.y + (1 - Math.min(0.2, smoothing)) * previous.y
+        x: smoothWeight * scaledX + (1 - smoothWeight) * previous.x,
+        y: smoothWeight * scaledY + (1 - smoothWeight) * previous.y
       }
+
+      // Small jitter dead-zone
+      const dx = Math.abs(smoothed.x - previous.x)
+      const dy = Math.abs(smoothed.y - previous.y)
       const stabilized = {
-        x: Math.abs(smoothed.x - previous.x) < 0.0025 ? previous.x : smoothed.x,
-        y: Math.abs(smoothed.y - previous.y) < 0.004 ? previous.y : smoothed.y
+        x: dx < 0.0015 ? previous.x : smoothed.x,
+        y: dy < 0.0015 ? previous.y : smoothed.y
       }
 
       previousRef.current = stabilized
@@ -78,5 +88,5 @@ export const useMouseControl = (
         frameRef.current = null
       }
     }
-  }, [enabled, minConfidence, smoothing])
+  }, [enabled, minConfidence, smoothing, mouseSpeed])
 }

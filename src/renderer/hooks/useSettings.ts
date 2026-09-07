@@ -6,9 +6,10 @@ import { storageService } from '../services/storageService'
 const SETTINGS_KEY = 'i-track.settings'
 
 export const useSettings = () => {
-  const [settings, setSettings] = useState<Settings>(
-    () => storageService.get<Settings>(SETTINGS_KEY) ?? DEFAULT_SETTINGS
-  )
+  const [settings, setSettings] = useState<Settings>(() => {
+    const saved = storageService.get<Partial<Settings>>(SETTINGS_KEY)
+    return saved ? { ...DEFAULT_SETTINGS, ...saved } : DEFAULT_SETTINGS
+  })
 
   const updateSettings = useCallback((partial: Partial<Settings>) => {
     setSettings((previous) => {

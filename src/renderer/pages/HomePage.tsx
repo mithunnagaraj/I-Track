@@ -7,10 +7,13 @@ interface HomePageProps {
   trackingActive: boolean
   confidence: number
   fps: number
+  hasCalibration?: boolean
   onStart: () => void
   onStop: () => void
   onOpenCalibration: () => void
   onOpenSettings: () => void
+  onCenterGaze?: () => void
+  onClearCalibration?: () => void
 }
 
 export const HomePage = ({
@@ -18,10 +21,13 @@ export const HomePage = ({
   trackingActive,
   confidence,
   fps,
+  hasCalibration,
   onStart,
   onStop,
   onOpenCalibration,
-  onOpenSettings
+  onOpenSettings,
+  onCenterGaze,
+  onClearCalibration
 }: HomePageProps): JSX.Element => {
   return (
     <Box sx={pageSx}>
@@ -30,17 +36,28 @@ export const HomePage = ({
         trackingActive={trackingActive}
         confidence={confidence}
         fps={fps}
+        hasCalibration={hasCalibration}
       />
-      <Stack direction="row" spacing={2}>
-        <Button variant="contained" onClick={onStart}>
-          Start
+      <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
+        <Button variant="contained" color="primary" onClick={onStart}>
+          {trackingActive ? 'Restart Tracking' : 'Start Tracking'}
         </Button>
-        <Button variant="outlined" onClick={onStop}>
+        <Button variant="outlined" color="inherit" onClick={onStop}>
           Stop
         </Button>
-        <Button variant="outlined" onClick={onOpenCalibration}>
+        <Button variant="outlined" color="secondary" onClick={onOpenCalibration}>
           Calibrate
         </Button>
+        {onCenterGaze ? (
+          <Button variant="contained" color="success" onClick={onCenterGaze}>
+            Center Gaze
+          </Button>
+        ) : null}
+        {hasCalibration && onClearCalibration ? (
+          <Button variant="outlined" color="warning" onClick={onClearCalibration}>
+            Reset Calibration
+          </Button>
+        ) : null}
         <Button variant="outlined" onClick={onOpenSettings}>
           Settings
         </Button>

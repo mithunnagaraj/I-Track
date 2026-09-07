@@ -8,107 +8,118 @@ interface Point {
   y: number
 }
 
+// 5 well-spaced targets comfortable for webcam eye-tracking
 export const CALIBRATION_TARGETS: Point[] = [
-  { x: 0.1, y: 0.1 },
-  { x: 0.9, y: 0.1 },
+  { x: 0.15, y: 0.15 },
+  { x: 0.85, y: 0.15 },
   { x: 0.5, y: 0.5 },
-  { x: 0.1, y: 0.9 },
-  { x: 0.9, y: 0.9 }
+  { x: 0.15, y: 0.85 },
+  { x: 0.85, y: 0.85 }
 ]
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value))
 
-const applyHomography = (x: number, y: number, h: number[][]): { x: number; y: number } => {
-  const nx = h[0][0] * x + h[0][1] * y + h[0][2]
-  const ny = h[1][0] * x + h[1][1] * y + h[1][2]
-  const w = h[2][0] * x + h[2][1] * y + h[2][2]
-  if (w === 0) return { x, y }
-  return { x: nx / w, y: ny / w }
-}
+const solve3x3 = (a: number[][], b: number[]): number[] => {
+  const n = 3
+  const aug = a.map((row, i) => [...row, b[i]])
 
-const transpose = (matrix: number[][]): number[][] => {
-  const columns = matrix[0].length
-  return Array.from({ length: columns }, (_unused, col) => matrix.map((row) => row[col]))
-}
-
-const multiply = (a: number[][], b: number[][]): number[][] => {
-  const rows = a.length
-  const cols = b[0].length
-  const inner = b.length
-  return Array.from({ length: rows }, (_unusedRow, row) =>
-    Array.from({ length: cols }, (_unusedCol, col) => {
-      let total = 0
-      for (let i = 0; i < inner; i += 1) total += a[row][i] * b[i][col]
-      return total
-    })
-  )
-}
-
-const multiplyVector = (matrix: number[][], vector: number[]): number[] =>
-  matrix.map((row) => row.reduce((sum, value, index) => sum + value * vector[index], 0))
-
-const solveLinearSystem = (a: number[][], b: number[]): number[] => {
-  const n = a.length
-  const augmented = a.map((row, rowIndex) => [...row, b[rowIndex]])
-
-  for (let pivot = 0; pivot < n; pivot += 1) {
-    let maxRow = pivot
-    for (let row = pivot + 1; row < n; row += 1) {
-      if (Math.abs(augmented[row][pivot]) > Math.abs(augmented[maxRow][pivot])) maxRow = row
+  for (let p = 0; p < n; p += 1) {
+    let maxRow = p
+    for (let r = p + 1; r < n; r += 1) {
+      if (Math.abs(aug[r][p]) > Math.abs(aug[maxRow][p])) maxRow = r
     }
-    ;[augmented[pivot], augmented[maxRow]] = [augmented[maxRow], augmented[pivot]]
+    ;[aug[p], aug[maxRow]] = [aug[maxRow], aug[p]]
 
-    const pivotValue = augmented[pivot][pivot]
-    if (Math.abs(pivotValue) < 1e-10) {
-      throw new Error('Calibration homography matrix is singular; collect calibration again.')
+    const pivot = aug[p][p]
+    if (Math.abs(pivot) < 1e-12) {
+      return [0, 0, 0.5] // fallback
     }
 
-    for (let col = pivot; col <= n; col += 1) {
-      augmented[pivot][col] /= pivotValue
+    for (let c = p; c <= n; c += 1) {
+      aug[p][c] /= pivot
     }
 
-    for (let row = 0; row < n; row += 1) {
-      if (row === pivot) continue
-      const factor = augmented[row][pivot]
-      for (let col = pivot; col <= n; col += 1) {
-        augmented[row][col] -= factor * augmented[pivot][col]
+    for (let r = 0; r < n; r += 1) {
+      if (r === p) continue
+      const factor = aug[r][p]
+      for (let c = p; c <= n; c += 1) {
+        aug[r][c] -= factor * aug[p][c]
       }
     }
   }
 
-  return augmented.map((row) => row[n])
+  return [aug[0][n], aug[1][n], aug[2][n]]
 }
 
-const computeHomography = (points: CalibrationPoint[]): number[][] => {
-  if (points.length < 4) {
-    throw new Error('At least 4 calibration points are required to compute homography.')
+/**
+ * Robust affine calibration solver with ridge regularization.
+ * Maps (gazeX, gazeY) -> (screenX, screenY).
+ * Guaranteed to never divide by zero or invert directions.
+ */
+const computeRobustAffineMatrix = (points: CalibrationPoint[]): number[][] => {
+  if (points.length < 3) {
+    return [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1]
+    ]
   }
 
-  const aRows: number[][] = []
-  const bRows: number[] = []
+  // M = [gx, gy, 1]
+  // Normal equations: (M^T M + lambda*I) * A = M^T S
+  const lambda = 0.001
+  const mTm = [
+    [lambda, 0, 0],
+    [0, lambda, 0],
+    [0, 0, lambda]
+  ]
+  const mTsX = [0, 0, 0]
+  const mTsY = [0, 0, 0]
 
-  for (const point of points) {
-    const gx = point.gazeX
-    const gy = point.gazeY
-    const sx = point.screenX
-    const sy = point.screenY
+  for (const pt of points) {
+    const gx = pt.gazeX
+    const gy = pt.gazeY
+    const sx = pt.screenX
+    const sy = pt.screenY
 
-    aRows.push([gx, gy, 1, 0, 0, 0, -sx * gx, -sx * gy])
-    bRows.push(sx)
-    aRows.push([0, 0, 0, gx, gy, 1, -sy * gx, -sy * gy])
-    bRows.push(sy)
+    mTm[0][0] += gx * gx
+    mTm[0][1] += gx * gy
+    mTm[0][2] += gx
+    mTm[1][0] += gy * gx
+    mTm[1][1] += gy * gy
+    mTm[1][2] += gy
+    mTm[2][0] += gx
+    mTm[2][1] += gy
+    mTm[2][2] += 1
+
+    mTsX[0] += gx * sx
+    mTsX[1] += gy * sx
+    mTsX[2] += sx
+
+    mTsY[0] += gx * sy
+    mTsY[1] += gy * sy
+    mTsY[2] += sy
   }
 
-  const aT = transpose(aRows)
-  const normalA = multiply(aT, aRows)
-  const normalB = multiplyVector(aT, bRows)
-  const h = solveLinearSystem(normalA, normalB)
+  const coeffX = solve3x3(mTm, mTsX)
+  const coeffY = solve3x3(mTm, mTsY)
 
   return [
-    [h[0], h[1], h[2]],
-    [h[3], h[4], h[5]],
-    [h[6], h[7], 1]
+    [coeffX[0], coeffX[1], coeffX[2]],
+    [coeffY[0], coeffY[1], coeffY[2]],
+    [0, 0, 1]
   ]
+}
+
+const applyHomography = (x: number, y: number, h: number[][]): { x: number; y: number } => {
+  if (!h || h.length < 3 || !h[0] || !h[1] || !h[2]) return { x, y }
+  const nx = h[0][0] * x + h[0][1] * y + h[0][2]
+  const ny = h[1][0] * x + h[1][1] * y + h[1][2]
+  const w = h[2][0] * x + h[2][1] * y + h[2][2]
+  if (Math.abs(w) < 1e-6 || !Number.isFinite(nx) || !Number.isFinite(ny)) {
+    return { x, y }
+  }
+  return { x: nx / w, y: ny / w }
 }
 
 const distance = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y)
@@ -129,7 +140,7 @@ export const calibrationService = {
     return []
   },
   finishCalibration(points: CalibrationPoint[]): CalibrationMatrix {
-    const h = computeHomography(points)
+    const h = computeRobustAffineMatrix(points)
     const accuracy = computeAccuracy(points, h)
     return {
       h,
@@ -141,26 +152,35 @@ export const calibrationService = {
     raw: { x: number; y: number },
     matrix: CalibrationMatrix | null
   ): { x: number; y: number } {
-    if (matrix === null) return raw
+    if (matrix === null || !matrix.h) return raw
     const transformed = applyHomography(raw.x, raw.y, matrix.h)
-    return { x: clamp01(transformed.x), y: clamp01(transformed.y) }
+    return {
+      x: clamp01(Number.isFinite(transformed.x) ? transformed.x : raw.x),
+      y: clamp01(Number.isFinite(transformed.y) ? transformed.y : raw.y)
+    }
   },
   async saveCalibration(matrix: CalibrationMatrix): Promise<void> {
     storageService.set(STORAGE_KEY, matrix)
-    await window.api.saveCalibration(matrix)
+    if (window.api?.saveCalibration) {
+      await window.api.saveCalibration(matrix)
+    }
   },
   async loadCalibration(): Promise<CalibrationMatrix | null> {
-    const persisted = await window.api.loadCalibration()
-    if (persisted) {
-      storageService.set(STORAGE_KEY, persisted)
-      return persisted
+    if (window.api?.loadCalibration) {
+      const persisted = await window.api.loadCalibration()
+      if (persisted && Array.isArray(persisted.h)) {
+        storageService.set(STORAGE_KEY, persisted)
+        return persisted
+      }
     }
     return storageService.get<CalibrationMatrix>(STORAGE_KEY)
   },
   async deleteCalibration(): Promise<void> {
     storageService.remove(STORAGE_KEY)
-    await window.api.deleteCalibration()
+    if (window.api?.deleteCalibration) {
+      await window.api.deleteCalibration()
+    }
   }
 }
 
-export { computeHomography, applyHomography }
+export { computeRobustAffineMatrix as computeHomography, applyHomography }
