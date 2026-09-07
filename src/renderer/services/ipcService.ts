@@ -1,5 +1,5 @@
 import type { CalibrationMatrix } from '../types/calibration'
-import type { MouseButton } from '../types/ipc'
+import type { AppSettings, MouseButton } from '../types/ipc'
 
 export const ipcService = {
   moveMouse(x: number, y: number): Promise<void> {
@@ -43,5 +43,37 @@ export const ipcService = {
       return window.api.getCalibrationAccuracy()
     }
     return Promise.resolve(null)
+  },
+  checkAccessibility(): Promise<boolean> {
+    if (window.api?.checkAccessibility) {
+      return window.api.checkAccessibility()
+    }
+    return Promise.resolve(true)
+  },
+  requestAccessibility(): Promise<boolean> {
+    if (window.api?.requestAccessibility) {
+      return window.api.requestAccessibility()
+    }
+    return Promise.resolve(true)
+  },
+  loadSettings(): Promise<AppSettings | null> {
+    if (window.api?.loadSettings) {
+      return window.api.loadSettings()
+    }
+    return Promise.resolve(null)
+  },
+  saveSettings(settings: AppSettings): Promise<void> {
+    if (window.api?.saveSettings) {
+      return window.api.saveSettings(settings)
+    }
+    return Promise.resolve()
+  },
+  resetSettings(): Promise<void> {
+    if (window.api?.resetSettings) {
+      return window.api.resetSettings()
+    }
+    return Promise.resolve()
   }
 }
+
+

@@ -93,11 +93,12 @@ export const GAZE_RANGE_INITIAL_MAX_Y = 0.8
 /** Per-frame interpolation factor for the on-screen gaze dot (0.0 to 1.0)
  *  Each animation frame, the rendered dot moves this fraction of the way
  *  toward the latest tracked point, independent of detection frame rate.
- *  Higher = snappier but less smooth
+ *  Higher = snappier and responsive (now that One Euro Filter handles stability)
  *  Lower = smoother/glidier but more perceived lag
- *  Current: 0.18 (smooth glide, low lag)
+ *  Current: 0.55 (responsive, tight tracking)
  */
-export const GAZE_DOT_RENDER_LERP_FACTOR = 0.18
+export const GAZE_DOT_RENDER_LERP_FACTOR = 0.55
+
 
 // ============================================================================
 // MOUSE CONTROL SMOOTHING (useMouseControl.ts)

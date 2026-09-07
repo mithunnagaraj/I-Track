@@ -1,18 +1,44 @@
 import path from 'node:path'
 import { promises as fs } from 'node:fs'
-import { app, ipcMain } from 'electron'
+import { app, ipcMain, systemPreferences } from 'electron'
 import { MouseController } from './mouse/MouseController'
 import { createMainWindow } from './window'
-import { CALIBRATION_CHANNELS, MOUSE_CHANNELS, SETTINGS_CHANNELS } from '../shared/ipc-channels'
-import type { CalibrationPayload } from '../shared/ipc'
+import {
+  CALIBRATION_CHANNELS,
+  MOUSE_CHANNELS,
+  SETTINGS_CHANNELS,
+  SYSTEM_CHANNELS
+} from '../shared/ipc-channels'
+import type { AppSettings, CalibrationPayload } from '../shared/ipc'
+import { DEFAULT_SETTINGS } from '../shared/constants'
 
 let mainWindow: ReturnType<typeof createMainWindow> | null = null
 const mouseController = new MouseController()
 
-const settingsStore = new Map<string, unknown>()
+let cachedSettings: AppSettings | null = null
 let calibrationData: CalibrationPayload | null = null
 
+const settingsFilePath = (): string => path.join(app.getPath('userData'), 'settings.json')
 const calibrationFilePath = (): string => path.join(app.getPath('userData'), 'calibration.json')
+
+const loadSettingsFromDisk = async (): Promise<AppSettings | null> => {
+  try {
+    const raw = await fs.readFile(settingsFilePath(), 'utf-8')
+    const parsed = JSON.parse(raw) as Partial<AppSettings>
+    if (parsed && typeof parsed === 'object') {
+      return { ...DEFAULT_SETTINGS, ...parsed }
+    }
+    return null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+const saveSettingsToDisk = async (payload: AppSettings): Promise<void> => {
+  await fs.mkdir(app.getPath('userData'), { recursive: true })
+  await fs.writeFile(settingsFilePath(), JSON.stringify(payload, null, 2), 'utf-8')
+}
 
 const loadCalibrationFromDisk = async (): Promise<CalibrationPayload | null> => {
   try {
@@ -62,14 +88,31 @@ const registerIpcHandlers = (): void => {
   })
   ipcMain.handle(MOUSE_CHANNELS.GET_SCREEN_SIZE, () => mouseController.getScreenSize())
 
-  ipcMain.handle(SETTINGS_CHANNELS.GET, (_event, key: string) =>
-    settingsStore.has(key) ? settingsStore.get(key) : null
-  )
-  ipcMain.handle(SETTINGS_CHANNELS.SET, (_event, key: string, value: unknown) => {
-    settingsStore.set(key, value)
+  ipcMain.handle(SETTINGS_CHANNELS.LOAD_ALL, async () => {
+    if (cachedSettings) return cachedSettings
+    cachedSettings = await loadSettingsFromDisk()
+    return cachedSettings ?? DEFAULT_SETTINGS
   })
-  ipcMain.handle(SETTINGS_CHANNELS.RESET, () => {
-    settingsStore.clear()
+  ipcMain.handle(SETTINGS_CHANNELS.SAVE_ALL, async (_event, settings: AppSettings) => {
+    cachedSettings = settings
+    await saveSettingsToDisk(settings)
+  })
+  ipcMain.handle(SETTINGS_CHANNELS.GET, async (_event, key: string) => {
+    if (!cachedSettings) {
+      cachedSettings = (await loadSettingsFromDisk()) ?? DEFAULT_SETTINGS
+    }
+    return key in cachedSettings ? (cachedSettings as unknown as Record<string, unknown>)[key] : null
+  })
+  ipcMain.handle(SETTINGS_CHANNELS.SET, async (_event, key: string, value: unknown) => {
+    if (!cachedSettings) {
+      cachedSettings = (await loadSettingsFromDisk()) ?? DEFAULT_SETTINGS
+    }
+    cachedSettings = { ...cachedSettings, [key]: value }
+    await saveSettingsToDisk(cachedSettings)
+  })
+  ipcMain.handle(SETTINGS_CHANNELS.RESET, async () => {
+    cachedSettings = { ...DEFAULT_SETTINGS }
+    await saveSettingsToDisk(cachedSettings)
   })
 
   ipcMain.handle(CALIBRATION_CHANNELS.SAVE, async (_event, data: CalibrationPayload) => {
@@ -92,6 +135,15 @@ const registerIpcHandlers = (): void => {
   ipcMain.handle(CALIBRATION_CHANNELS.GET_ACCURACY, () => {
     if (!calibrationData) return null
     return calibrationData.accuracy
+  })
+
+  ipcMain.handle(SYSTEM_CHANNELS.CHECK_ACCESSIBILITY, () => {
+    if (process.platform !== 'darwin') return true
+    return systemPreferences.isTrustedAccessibilityClient(false)
+  })
+  ipcMain.handle(SYSTEM_CHANNELS.REQUEST_ACCESSIBILITY, () => {
+    if (process.platform !== 'darwin') return true
+    return systemPreferences.isTrustedAccessibilityClient(true)
   })
 }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Box, Typography } from '@mui/material'
+import { Alert, Box, Button, Typography } from '@mui/material'
 import { CameraPreview } from './components/CameraPreview'
 import { GazeVisualizer } from './components/GazeVisualizer'
 import { useCalibration } from './hooks/useCalibration'
@@ -7,6 +7,7 @@ import { useCameraStream } from './hooks/useCameraStream'
 import { useGazeTracker } from './hooks/useGazeTracker'
 import { useMouseControl } from './hooks/useMouseControl'
 import { useSettings } from './hooks/useSettings'
+import { ipcService } from './services/ipcService'
 import { CalibrationPage } from './pages/CalibrationPage'
 import { HomePage } from './pages/HomePage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -16,6 +17,7 @@ type AppView = 'home' | 'calibration' | 'settings'
 export const App = (): JSX.Element => {
   const [view, setView] = useState<AppView>('home')
   const [fps, setFps] = useState(0)
+  const [hasAccessibility, setHasAccessibility] = useState<boolean>(true)
   const lastTimestampRef = useRef<number | null>(null)
   const { stream, error: cameraError } = useCameraStream()
   const { settings, updateSettings, resetSettings } = useSettings()
@@ -121,6 +123,30 @@ export const App = (): JSX.Element => {
     updateSettings({ offsetX: 0, offsetY: 0 })
   }, [calibration, updateSettings])
 
+  const checkAccessibility = useCallback(async () => {
+    try {
+      const allowed = await ipcService.checkAccessibility()
+      setHasAccessibility(allowed)
+    } catch {
+      setHasAccessibility(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    void checkAccessibility()
+    window.addEventListener('focus', checkAccessibility)
+    return () => {
+      window.removeEventListener('focus', checkAccessibility)
+    }
+  }, [checkAccessibility])
+
+  const handleRequestAccessibility = useCallback(async () => {
+    await ipcService.requestAccessibility()
+    window.setTimeout(() => {
+      void checkAccessibility()
+    }, 1500)
+  }, [checkAccessibility])
+
   useEffect(() => {
     void initialize()
   }, [initialize])
@@ -201,12 +227,35 @@ export const App = (): JSX.Element => {
               : 'Tracking active, but no face detected. Face the camera directly.'
             : 'Camera ready. Click Start to begin eye tracking.')}
       </Typography>
+      {!hasAccessibility && (
+        <Alert
+          severity="warning"
+          variant="filled"
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              variant="outlined"
+              onClick={handleRequestAccessibility}
+              sx={{ fontWeight: 'bold' }}
+            >
+              Open System Settings
+            </Button>
+          }
+          sx={{ mb: 2 }}
+        >
+          macOS Accessibility Permission Required: System mouse control is disabled until permission is
+          granted in System Settings &gt; Privacy &amp; Security &gt; Accessibility.
+        </Alert>
+      )}
       <CameraPreview stream={stream} onVideoElement={attachVideoElement} />
       <Box sx={{ mt: 2 }}>{renderView()}</Box>
       <GazeVisualizer
         x={calibratedGaze?.x ?? 0.5}
         y={calibratedGaze?.y ?? 0.5}
-        visible={settings.gazeVisualizerEnabled && calibratedGaze !== null}
+        // Before a calibration exists the red dot is only an estimate. Hide it
+        // during sampling so the user looks at the target instead of chasing it.
+        visible={view !== 'calibration' && settings.gazeVisualizerEnabled && calibratedGaze !== null}
       />
     </Box>
   )

@@ -55,26 +55,20 @@ export const useMouseControl = (
 
       // Apply mouse movement speed scaling from center
       const speed = Math.max(0.2, mouseSpeed)
-      const scaledX = Math.max(0, Math.min(1, 0.5 + (current.x - 0.5) * speed))
-      const scaledY = Math.max(0, Math.min(1, 0.5 + (current.y - 0.5) * speed))
+      const targetX = Math.max(0, Math.min(1, 0.5 + (current.x - 0.5) * speed))
+      const targetY = Math.max(0, Math.min(1, 0.5 + (current.y - 0.5) * speed))
 
-      const previous = previousRef.current ?? { x: scaledX, y: scaledY }
-      const smoothWeight = Math.max(0.05, Math.min(0.9, 1 - smoothing))
-      const smoothed = {
-        x: smoothWeight * scaledX + (1 - smoothWeight) * previous.x,
-        y: smoothWeight * scaledY + (1 - smoothWeight) * previous.y
+      const previous = previousRef.current ?? { x: targetX, y: targetY }
+
+      // Skip redundant OS mouse events if movement is imperceptibly small
+      const dx = Math.abs(targetX - previous.x)
+      const dy = Math.abs(targetY - previous.y)
+      if (previousRef.current !== null && dx < 0.0008 && dy < 0.0008) {
+        return
       }
 
-      // Small jitter dead-zone
-      const dx = Math.abs(smoothed.x - previous.x)
-      const dy = Math.abs(smoothed.y - previous.y)
-      const stabilized = {
-        x: dx < 0.0015 ? previous.x : smoothed.x,
-        y: dy < 0.0015 ? previous.y : smoothed.y
-      }
-
-      previousRef.current = stabilized
-      await ipcService.moveMouse(stabilized.x * screen.width, stabilized.y * screen.height)
+      previousRef.current = { x: targetX, y: targetY }
+      await ipcService.moveMouse(targetX * screen.width, targetY * screen.height)
     }
 
     frameRef.current = window.requestAnimationFrame((time) => {

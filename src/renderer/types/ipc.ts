@@ -1,1 +1,2 @@
-export type { DesktopApi, MouseButton, ScreenSize } from '../../shared/ipc'
+export type { AppSettings, DesktopApi, MouseButton, ScreenSize } from '../../shared/ipc'
+

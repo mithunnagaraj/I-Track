@@ -22,6 +22,13 @@ const TARGET_NAMES = [
 ]
 
 const SETTLE_DELAY_MS = 400
+const MIN_CAPTURE_SAMPLES = 12
+
+const median = (values: number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+}
 
 const playBeep = () => {
   try {
@@ -53,6 +60,7 @@ export const CalibrationPage = ({
 }: CalibrationPageProps): JSX.Element => {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [isSettling, setIsSettling] = useState(true)
+  const [sampleCount, setSampleCount] = useState(0)
   const [completedMatrix, setCompletedMatrix] = useState<CalibrationMatrix | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -61,12 +69,13 @@ export const CalibrationPage = ({
   const settleTimerRef = useRef<number | null>(null)
 
   const currentTarget = CALIBRATION_TARGETS[currentIndex] ?? CALIBRATION_TARGETS[CALIBRATION_TARGETS.length - 1]
-  const holdProgress = 0
+  const holdProgress = Math.min(1, sampleCount / MIN_CAPTURE_SAMPLES)
 
   // Settle delay on index change so user has time to move eyes to target
   useEffect(() => {
     setIsSettling(true)
     samplesBufferRef.current = []
+    setSampleCount(0)
 
     if (settleTimerRef.current !== null) {
       window.clearTimeout(settleTimerRef.current)
@@ -86,18 +95,15 @@ export const CalibrationPage = ({
   const capturePoint = useCallback(() => {
     if (completedMatrix) return
 
-    // Pick average of recent samples, or current gazePoint, or fallback to center
-    const recent = samplesBufferRef.current.slice(-10)
-    let avgX = 0.5
-    let avgY = 0.55
-
-    if (recent.length > 0) {
-      avgX = recent.reduce((sum, p) => sum + p.x, 0) / recent.length
-      avgY = recent.reduce((sum, p) => sum + p.y, 0) / recent.length
-    } else if (gazePoint) {
-      avgX = gazePoint.rawX ?? gazePoint.x
-      avgY = gazePoint.rawY ?? gazePoint.y
+    const recent = samplesBufferRef.current.slice(-20)
+    if (recent.length < MIN_CAPTURE_SAMPLES) {
+      setError('Hold your gaze on the target until the eye signal is stable, then capture.')
+      return
     }
+
+    // Median sampling rejects brief blinks and saccades better than an average.
+    const avgX = median(recent.map((point) => point.x))
+    const avgY = median(recent.map((point) => point.y))
 
     const sample: CalibrationPoint = {
       screenX: currentTarget.x,
@@ -108,10 +114,12 @@ export const CalibrationPage = ({
     }
 
     playBeep()
+    setError(null)
 
     const nextSamples = [...finalizedSamplesRef.current, sample]
     finalizedSamplesRef.current = nextSamples
     samplesBufferRef.current = []
+    setSampleCount(0)
 
     if (currentIndex < CALIBRATION_TARGETS.length - 1) {
       setCurrentIndex((i) => i + 1)
@@ -130,7 +138,7 @@ export const CalibrationPage = ({
         finishError instanceof Error ? finishError.message : 'Failed to compute calibration matrix.'
       )
     }
-  }, [completedMatrix, currentIndex, currentTarget.x, currentTarget.y, gazePoint])
+  }, [completedMatrix, currentIndex, currentTarget.x, currentTarget.y])
 
   // Keybindings: Spacebar or Enter to capture instantly; Esc to exit
   useEffect(() => {
@@ -168,7 +176,7 @@ export const CalibrationPage = ({
     if (samplesBufferRef.current.length > 30) {
       samplesBufferRef.current = samplesBufferRef.current.slice(-30)
     }
-
+    setSampleCount(samplesBufferRef.current.length)
   }, [completedMatrix, gazePoint, isSettling, minConfidence])
 
   // Completion review screen
@@ -227,6 +235,7 @@ export const CalibrationPage = ({
               onClick={() => {
                 finalizedSamplesRef.current = []
                 samplesBufferRef.current = []
+                setSampleCount(0)
                 setCompletedMatrix(null)
                 setCurrentIndex(0)
               }}
@@ -261,12 +270,12 @@ export const CalibrationPage = ({
           Point {TARGET_NAMES[currentIndex]}
         </Typography>
         <Typography variant="body1" sx={{ color: '#94a3b8', mb: 1 }}>
-          Look directly at the target and <b>CLICK IT</b> or press <b>[Spacebar]</b>
+          Look directly at the target. Do not move your head to chase the old red dot; press <b>[Spacebar]</b> once the sample counter reaches 12/12.
         </Typography>
 
         <Stack direction="row" spacing={1} justifyContent="center" alignItems="center">
           <Chip
-            label={`Target ${currentIndex + 1} of ${CALIBRATION_TARGETS.length}`}
+            label={`Target ${currentIndex + 1} of ${CALIBRATION_TARGETS.length} · ${Math.min(sampleCount, MIN_CAPTURE_SAMPLES)}/${MIN_CAPTURE_SAMPLES} samples`}
             color="primary"
             size="small"
             sx={{ fontWeight: 600 }}
@@ -304,7 +313,7 @@ export const CalibrationPage = ({
           color="secondary"
           size="medium"
           onClick={capturePoint}
-          disabled={isSettling}
+          disabled={isSettling || sampleCount < MIN_CAPTURE_SAMPLES}
         >
           Click / Capture Target (Spacebar)
         </Button>

@@ -10,7 +10,9 @@ export const MOUSE_CHANNELS = {
 export const SETTINGS_CHANNELS = {
   GET: 'settings:get',
   SET: 'settings:set',
-  RESET: 'settings:reset'
+  RESET: 'settings:reset',
+  SAVE_ALL: 'settings:saveAll',
+  LOAD_ALL: 'settings:loadAll'
 } as const
 
 export const CALIBRATION_CHANNELS = {
@@ -19,3 +21,9 @@ export const CALIBRATION_CHANNELS = {
   DELETE: 'calibration:delete',
   GET_ACCURACY: 'calibration:getAccuracy'
 } as const
+
+export const SYSTEM_CHANNELS = {
+  CHECK_ACCESSIBILITY: 'system:checkAccessibility',
+  REQUEST_ACCESSIBILITY: 'system:requestAccessibility'
+} as const
+

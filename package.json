@@ -6,6 +6,7 @@
   "main": "dist/main/main.js",
   "scripts": {
     "clean": "rimraf dist release",
+    "setup:models": "node scripts/setup-models.js",
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
     "dev:renderer": "vite",
     "dev:main": "tsc -p tsconfig.main.json --watch --preserveWatchOutput",

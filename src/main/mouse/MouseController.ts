@@ -5,13 +5,17 @@ import { robotWrapper } from './robot-wrapper'
 export class MouseController {
   public getScreenSize(): ScreenSize {
     const primary = screen.getPrimaryDisplay()
-    return primary.workAreaSize
+    return {
+      width: primary.bounds.width,
+      height: primary.bounds.height
+    }
   }
 
   public moveTo(x: number, y: number): void {
-    const { width, height } = this.getScreenSize()
-    const clampedX = Math.max(0, Math.min(Math.round(x), width - 1))
-    const clampedY = Math.max(0, Math.min(Math.round(y), height - 1))
+    const primary = screen.getPrimaryDisplay()
+    const { x: originX, y: originY, width, height } = primary.bounds
+    const clampedX = Math.max(originX, Math.min(Math.round(originX + x), originX + width - 1))
+    const clampedY = Math.max(originY, Math.min(Math.round(originY + y), originY + height - 1))
     robotWrapper.moveMouse(clampedX, clampedY)
   }
 

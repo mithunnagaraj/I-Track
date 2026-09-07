@@ -42,9 +42,14 @@ export interface DesktopApi {
   getScreenSize: () => Promise<ScreenSize>
   getSetting: <T>(key: string) => Promise<T | null>
   setSetting: <T>(key: string, value: T) => Promise<void>
+  loadSettings: () => Promise<AppSettings | null>
+  saveSettings: (settings: AppSettings) => Promise<void>
   resetSettings: () => Promise<void>
   saveCalibration: (data: CalibrationPayload) => Promise<void>
   loadCalibration: () => Promise<CalibrationPayload | null>
   deleteCalibration: () => Promise<void>
   getCalibrationAccuracy: () => Promise<number | null>
+  checkAccessibility: () => Promise<boolean>
+  requestAccessibility: () => Promise<boolean>
 }
+

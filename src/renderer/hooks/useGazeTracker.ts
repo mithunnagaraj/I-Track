@@ -3,16 +3,7 @@ import { estimateGaze } from '../ml/EyeGazeEstimator'
 import { FaceDetector } from '../ml/FaceDetector'
 import { MediaPipeWrapper } from '../ml/MediaPipeWrapper'
 import type { GazePoint } from '../types/gaze'
-import {
-  GAZE_TRACKING_SMOOTHING_WEIGHT,
-  GAZE_TRACKING_DEAD_ZONE,
-  GAZE_RANGE_LEARNING_RATE,
-  GAZE_RANGE_MIN_SPAN,
-  GAZE_RANGE_INITIAL_MIN_X,
-  GAZE_RANGE_INITIAL_MAX_X,
-  GAZE_RANGE_INITIAL_MIN_Y,
-  GAZE_RANGE_INITIAL_MAX_Y
-} from '../constants/gazeTrackingConstants'
+import { OneEuroFilter2D } from '../utils/OneEuroFilter'
 
 export interface UseGazeTrackerOptions {
   gainX?: number
@@ -36,11 +27,17 @@ export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
   const detectorRef = useRef<FaceDetector | null>(null)
   const initializationRef = useRef<Promise<void> | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
-  const smoothedRef = useRef<{ x: number; y: number } | null>(null)
+  const filterRef = useRef<OneEuroFilter2D>(
+    new OneEuroFilter2D({ minCutoff: 0.9, beta: 0.08, dCutoff: 1.0 })
+  )
   const optionsRef = useRef<UseGazeTrackerOptions>(options ?? {})
 
   useEffect(() => {
     optionsRef.current = options ?? {}
+    const smoothing = options?.smoothing ?? 0.65
+    // Map smoothing (0.1 - 0.95) to minCutoff (higher smoothing = lower cutoff = more stable fixations)
+    const minCutoff = Math.max(0.2, (1 - smoothing) * 2.5)
+    filterRef.current.setParameters({ minCutoff, beta: 0.08 })
   }, [options])
 
   const clamp01 = (value: number): number => Math.max(0, Math.min(1, value))
@@ -93,35 +90,17 @@ export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
           if (estimated) {
             const targetX = clamp01(estimated.x)
             const targetY = clamp01(estimated.y)
-            const previous = smoothedRef.current ?? { x: targetX, y: targetY }
 
-            // A modest boost makes deliberate eye movements responsive without
-            // turning a head movement into a full-screen jump.
-            const dist = Math.hypot(targetX - previous.x, targetY - previous.y)
-            // The settings control expresses smoothing (higher = steadier),
-            // whereas this interpolation weight expresses responsiveness
-            // (higher = faster). Convert once here to keep the UI truthful.
-            const smoothingAmount = optionsRef.current.smoothing ?? (1 - GAZE_TRACKING_SMOOTHING_WEIGHT)
-            const baseWeight = Math.max(0.08, Math.min(0.7, 1 - smoothingAmount))
-            const weight = dist > 0.08 ? Math.min(0.55, baseWeight * 1.3) : baseWeight
-
-            const smoothed = {
-              x: weight * targetX + (1 - weight) * previous.x,
-              y: weight * targetY + (1 - weight) * previous.y
-            }
-
-            // Apply dead-zone: very small micro-movements ignored to prevent twitching
-            const dx = Math.abs(smoothed.x - previous.x)
-            const dy = Math.abs(smoothed.y - previous.y)
-            const stabilized = {
-              x: dx < GAZE_TRACKING_DEAD_ZONE ? previous.x : smoothed.x,
-              y: dy < GAZE_TRACKING_DEAD_ZONE ? previous.y : smoothed.y
-            }
-            smoothedRef.current = stabilized
+            // One Euro Filter adaptively filters noise based on eye velocity:
+            // High speed (saccades) -> cutoff increases -> zero latency
+            // Low speed (fixations) -> cutoff stays low -> rock-solid jitter-free
+            const filtered = filterRef.current.filter(targetX, targetY, timestampMs)
+            const stabilizedX = clamp01(filtered.x)
+            const stabilizedY = clamp01(filtered.y)
 
             setGazePoint({
-              x: stabilized.x,
-              y: stabilized.y,
+              x: stabilizedX,
+              y: stabilizedY,
               rawX: estimated.rawX,
               rawY: estimated.rawY,
               confidence: Math.min(1, Math.max(0, estimated.confidence * (detection.confidence ?? 1))),
@@ -158,7 +137,7 @@ export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
       return
     }
     lastTimestampRef.current = 0
-    smoothedRef.current = null
+    filterRef.current.reset()
     setIsTracking(true)
     frameRef.current = window.requestAnimationFrame(loop)
   }, [initialize, isTracking, loop])
@@ -170,7 +149,7 @@ export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
       frameRef.current = null
     }
     lastTimestampRef.current = 0
-    smoothedRef.current = null
+    filterRef.current.reset()
   }, [])
 
   const attachVideoElement = useCallback((video: HTMLVideoElement | null) => {
