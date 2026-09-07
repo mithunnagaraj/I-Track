@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Box, Button, Typography } from '@mui/material'
+import { AccuracyTestModal } from './components/AccuracyTestModal'
 import { CameraPreview } from './components/CameraPreview'
+import { GazeOverlay } from './components/GazeOverlay'
 import { GazeVisualizer } from './components/GazeVisualizer'
 import { useCalibration } from './hooks/useCalibration'
 import { useCameraStream } from './hooks/useCameraStream'
 import { useGazeTracker } from './hooks/useGazeTracker'
 import { useMouseControl } from './hooks/useMouseControl'
 import { useSettings } from './hooks/useSettings'
+import { calibrationService } from './services/calibrationService'
 import { ipcService } from './services/ipcService'
+import type { CalibrationProfile } from './types/calibration'
+import type { DisplayInfo, UpdateInfo } from './types/ipc'
 import { CalibrationPage } from './pages/CalibrationPage'
 import { HomePage } from './pages/HomePage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -18,11 +23,92 @@ export const App = (): JSX.Element => {
   const [view, setView] = useState<AppView>('home')
   const [fps, setFps] = useState(0)
   const [hasAccessibility, setHasAccessibility] = useState<boolean>(true)
+  const [displays, setDisplays] = useState<DisplayInfo[]>([])
+  const [profiles, setProfiles] = useState<CalibrationProfile[]>([])
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo>({ state: 'idle', version: '0.1.0' })
+  const [accuracyModalOpen, setAccuracyModalOpen] = useState(false)
+
   const lastTimestampRef = useRef<number | null>(null)
   const { stream, error: cameraError } = useCameraStream()
   const { settings, updateSettings, resetSettings } = useSettings()
   const calibration = useCalibration()
   const applyCalibration = calibration.apply
+
+  // Load Calibration Profiles
+  const refreshProfiles = useCallback(async () => {
+    try {
+      const list = await calibrationService.listProfiles()
+      setProfiles(list)
+    } catch (err) {
+      console.warn('Failed to load calibration profiles:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshProfiles()
+  }, [refreshProfiles])
+
+  // Updater status listener & auto-check on startup
+  useEffect(() => {
+    const unsubscribe = ipcService.onUpdateStatusChanged((info) => {
+      setUpdateInfo(info)
+    })
+    if (settings.autoCheckUpdates) {
+      void ipcService.checkForUpdates().then((info) => {
+        setUpdateInfo(info)
+      })
+    }
+    return () => {
+      unsubscribe()
+    }
+  }, [settings.autoCheckUpdates])
+
+  const refreshDisplays = useCallback(async () => {
+    try {
+      const list = await ipcService.getDisplays()
+      setDisplays(list)
+    } catch {
+      // Fallback handled by ipcService
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshDisplays()
+    window.addEventListener('focus', refreshDisplays)
+    return () => {
+      window.removeEventListener('focus', refreshDisplays)
+    }
+  }, [refreshDisplays])
+
+  const activeDisplay = useMemo(() => {
+    const idx = settings.screenIndex ?? 0
+    return displays[idx] ?? displays[0] ?? null
+  }, [displays, settings.screenIndex])
+
+  const activeDisplayLabel = useMemo(() => {
+    if (!activeDisplay) return undefined
+    return `${activeDisplay.name} (${activeDisplay.bounds.width}×${activeDisplay.bounds.height})`
+  }, [activeDisplay])
+
+  const activeProfile = useMemo(() => {
+    const id = settings.activeProfileId ?? 'default'
+    return profiles.find((p) => p.id === id) ?? profiles[0] ?? null
+  }, [profiles, settings.activeProfileId])
+
+  const calibrationAgeDays = useMemo(() => {
+    if (!calibration.matrix?.createdAt) return null
+    const elapsedMs = Date.now() - calibration.matrix.createdAt
+    return Math.max(0, Math.floor(elapsedMs / (1000 * 60 * 60 * 24)))
+  }, [calibration.matrix?.createdAt])
+
+  const showCalibrationPrompt = useMemo(() => {
+    if (!settings.autoCalibrationPrompt) return false
+    if (!calibration.matrix) return true
+    if (typeof calibrationAgeDays === 'number' && calibrationAgeDays >= (settings.calibrationRecency ?? 7)) {
+      return true
+    }
+    return false
+  }, [calibration.matrix, calibrationAgeDays, settings.autoCalibrationPrompt, settings.calibrationRecency])
 
   const trackerOptions = useMemo(
     () => ({
@@ -34,7 +120,9 @@ export const App = (): JSX.Element => {
       baselineX: settings.baselineX,
       baselineY: settings.baselineY,
       headGainX: settings.headGainX,
-      headGainY: settings.headGainY
+      headGainY: settings.headGainY,
+      targetFps: settings.targetFps,
+      gpuAcceleration: settings.gpuAcceleration
     }),
     [
       settings.gazeGainX,
@@ -45,7 +133,9 @@ export const App = (): JSX.Element => {
       settings.baselineX,
       settings.baselineY,
       settings.headGainX,
-      settings.headGainY
+      settings.headGainY,
+      settings.targetFps,
+      settings.gpuAcceleration
     ]
   )
 
@@ -86,14 +176,71 @@ export const App = (): JSX.Element => {
 
   // System mouse follows the exact calibrated gaze dot position
   useMouseControl(
-    // Keep the OS cursor still while the calibration overlay is sampling gaze.
-    // The visual dot remains active, but mouse movement would otherwise fight
-    // target selection and make the five samples unreliable.
     isTracking && settings.trackingEnabled && view !== 'calibration',
     calibratedGaze,
     settings.minConfidence,
     settings.mouseSmoothing,
-    settings.mouseSpeed
+    settings.mouseSpeed,
+    settings.screenIndex ?? 0
+  )
+
+  // Profile selection handler
+  const handleSelectProfile = useCallback(
+    async (profileId: string) => {
+      const target = profiles.find((p) => p.id === profileId)
+      if (target) {
+        updateSettings({
+          activeProfileId: profileId,
+          calibrationMode: target.gridMode
+        })
+        await calibration.save(target.matrix)
+      }
+    },
+    [calibration, profiles, updateSettings]
+  )
+
+  // Profile creation handler
+  const handleCreateProfile = useCallback(
+    async (name: string) => {
+      const newId = `profile-${Date.now()}`
+      const baseMatrix = calibration.matrix ?? {
+        h: [
+          [1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1]
+        ],
+        createdAt: Date.now(),
+        accuracy: 90,
+        gridMode: settings.calibrationMode ?? '5-point'
+      }
+      const newProfile: CalibrationProfile = {
+        id: newId,
+        name,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        gridMode: settings.calibrationMode ?? '5-point',
+        matrix: baseMatrix,
+        isDefault: false
+      }
+      const updated = await calibrationService.saveProfile(newProfile)
+      setProfiles(updated)
+      updateSettings({ activeProfileId: newId })
+      setView('calibration')
+    },
+    [calibration.matrix, settings.calibrationMode, updateSettings]
+  )
+
+  // Profile deletion handler
+  const handleDeleteProfile = useCallback(
+    async (profileId: string) => {
+      const updated = await calibrationService.deleteProfile(profileId)
+      setProfiles(updated)
+      if (settings.activeProfileId === profileId) {
+        const fallback = updated[0]?.id ?? 'default'
+        updateSettings({ activeProfileId: fallback })
+      }
+    },
+    [settings.activeProfileId, updateSettings]
   )
 
   // One-click center gaze: sets baseline or offsets so current gaze becomes (0.5, 0.5)
@@ -169,11 +316,29 @@ export const App = (): JSX.Element => {
       return (
         <SettingsPage
           settings={settings}
+          displays={displays}
+          calibrationAgeDays={calibrationAgeDays}
+          profiles={profiles}
+          activeProfile={activeProfile}
+          updateInfo={updateInfo}
+          onCheckUpdates={() => {
+            void ipcService.checkForUpdates().then((info) => setUpdateInfo(info))
+          }}
+          onDownloadUpdate={() => {
+            void ipcService.downloadUpdate()
+          }}
+          onInstallUpdate={() => {
+            void ipcService.quitAndInstallUpdate()
+          }}
+          onSelectProfile={handleSelectProfile}
+          onCreateProfile={handleCreateProfile}
+          onDeleteProfile={handleDeleteProfile}
           onUpdateSettings={updateSettings}
           onResetSettings={resetSettings}
           onBack={() => setView('home')}
           onCenterGaze={handleCenterGaze}
           onClearCalibration={handleClearCalibration}
+          onRunAccuracyTest={() => setAccuracyModalOpen(true)}
         />
       )
     }
@@ -183,9 +348,21 @@ export const App = (): JSX.Element => {
         <CalibrationPage
           gazePoint={gazePoint}
           minConfidence={Math.min(settings.minConfidence, 0.35)}
+          initialMode={settings.calibrationMode ?? '5-point'}
+          profileName={activeProfile?.name}
           onCancel={() => setView('home')}
           onComplete={(matrix) => {
-            void calibration.save(matrix).then(() => {
+            void calibration.save(matrix).then(async () => {
+              // Update active profile matrix if one exists
+              if (activeProfile) {
+                await calibrationService.saveProfile({
+                  ...activeProfile,
+                  matrix,
+                  gridMode: matrix.gridMode ?? settings.calibrationMode ?? '5-point',
+                  updatedAt: Date.now()
+                })
+                await refreshProfiles()
+              }
               setView('home')
             })
           }}
@@ -201,24 +378,44 @@ export const App = (): JSX.Element => {
         confidence={confidence}
         fps={fps}
         hasCalibration={calibration.matrix !== null}
+        calibrationAccuracy={calibration.matrix?.accuracy ?? null}
+        calibrationAgeDays={calibrationAgeDays}
+        activeDisplayLabel={activeDisplayLabel}
+        activeProfileName={activeProfile?.name ?? 'Default'}
+        profiles={profiles}
+        activeProfileId={settings.activeProfileId ?? 'default'}
+        gridMode={settings.calibrationMode ?? '5-point'}
+        gpuAcceleration={settings.gpuAcceleration ?? true}
+        updateInfo={updateInfo}
+        showCalibrationPrompt={showCalibrationPrompt}
+        debugModeEnabled={settings.debugModeEnabled}
         onStart={() => {
           void startTracking()
         }}
         onStop={stopTracking}
         onOpenCalibration={() => setView('calibration')}
         onOpenSettings={() => setView('settings')}
+        onOpenAccuracyTest={() => setAccuracyModalOpen(true)}
+        onSelectProfile={handleSelectProfile}
+        onToggleDebug={() => updateSettings({ debugModeEnabled: !settings.debugModeEnabled })}
         onCenterGaze={handleCenterGaze}
         onClearCalibration={handleClearCalibration}
+        onDownloadUpdate={() => {
+          void ipcService.downloadUpdate()
+        }}
+        onInstallUpdate={() => {
+          void ipcService.quitAndInstallUpdate()
+        }}
       />
     )
   }
 
   return (
     <Box sx={{ p: 3 }}>
-      <Typography variant="h4" gutterBottom>
+      <Typography variant="h4" gutterBottom sx={{ fontWeight: 800, letterSpacing: -0.5 }}>
         I-Track
       </Typography>
-      <Typography variant="body2" sx={{ mb: 2 }}>
+      <Typography variant="body2" sx={{ mb: 2, color: 'text.secondary' }}>
         {trackerError ??
           cameraError ??
           (isTracking
@@ -253,9 +450,26 @@ export const App = (): JSX.Element => {
       <GazeVisualizer
         x={calibratedGaze?.x ?? 0.5}
         y={calibratedGaze?.y ?? 0.5}
-        // Before a calibration exists the red dot is only an estimate. Hide it
-        // during sampling so the user looks at the target instead of chasing it.
         visible={view !== 'calibration' && settings.gazeVisualizerEnabled && calibratedGaze !== null}
+      />
+      <GazeOverlay
+        enabled={Boolean(settings.debugModeEnabled && view !== 'calibration')}
+        gazePoint={gazePoint}
+        calibratedGaze={calibratedGaze}
+        fps={fps}
+        targetDisplay={activeDisplay}
+        onClose={() => updateSettings({ debugModeEnabled: false })}
+      />
+
+      <AccuracyTestModal
+        open={accuracyModalOpen}
+        gazePoint={gazePoint}
+        matrix={calibration.matrix}
+        onClose={() => setAccuracyModalOpen(false)}
+        onRecalibrate={() => {
+          setAccuracyModalOpen(false)
+          setView('calibration')
+        }}
       />
     </Box>
   )

@@ -1117,8 +1117,8 @@ Generate:
 | Phase | Duration | Features | Status |
 |-------|----------|----------|--------|
 | **Phase 1: MVP** | Weeks 1-3 | Eye detection, gaze tracking, mouse control, calibration | ✅ Done |
-| **Phase 2: Enhancement** | Weeks 4-5 | Settings, visual feedback, multi-monitor support | 🟡 In Progress (Settings & UI done, multi-monitor pending) |
-| **Phase 3: Polish** | Weeks 6-7 | Performance, auto-updates, advanced calibration | 🔴 |
+| **Phase 2: Enhancement** | Weeks 4-5 | Settings, visual feedback, multi-monitor support | ✅ Done |
+| **Phase 3: Polish** | Weeks 6-7 | Performance, auto-updates, advanced calibration | ✅ Done |
 | **Phase 4: Testing** | Week 8 | QA, bug fixes, documentation | 🔴 |
 
 ---

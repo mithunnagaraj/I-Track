@@ -16,4 +16,7 @@ export interface GazeEstimate {
   confidence: number
   rawX: number
   rawY: number
+  yaw?: number
+  pitch?: number
+  eyeOpenness?: number
 }

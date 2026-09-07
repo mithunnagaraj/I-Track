@@ -147,6 +147,9 @@ export const estimateGaze = (
     y,
     rawX,
     rawY,
+    yaw: Math.round(rawYaw * 100) / 100,
+    pitch: Math.round(rawPitch * 100) / 100,
+    eyeOpenness: Math.round(avgOpen * 100) / 100,
     confidence
   }
 }

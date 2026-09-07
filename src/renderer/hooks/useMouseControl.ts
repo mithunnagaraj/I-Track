@@ -7,7 +7,8 @@ export const useMouseControl = (
   gazePoint: GazePoint | null,
   minConfidence = 0.35,
   smoothing = 0.3,
-  mouseSpeed = 1.0
+  mouseSpeed = 1.0,
+  screenIndex = 0
 ): void => {
   const previousRef = useRef<{ x: number; y: number } | null>(null)
   const screenRef = useRef<{ width: number; height: number } | null>(null)
@@ -26,9 +27,9 @@ export const useMouseControl = (
     }
     let cancelled = false
 
-    const initialize = async () => {
+    const updateScreenDimensions = async () => {
       try {
-        const screenSize = await ipcService.getScreenSize()
+        const screenSize = await ipcService.getScreenSize(screenIndex)
         if (cancelled) return
         screenRef.current = screenSize
       } catch {
@@ -37,7 +38,12 @@ export const useMouseControl = (
       }
     }
 
-    void initialize()
+    void updateScreenDimensions()
+
+    const onFocus = () => {
+      void updateScreenDimensions()
+    }
+    window.addEventListener('focus', onFocus)
 
     const tick = async (time: number) => {
       if (cancelled) return
@@ -68,7 +74,7 @@ export const useMouseControl = (
       }
 
       previousRef.current = { x: targetX, y: targetY }
-      await ipcService.moveMouse(targetX * screen.width, targetY * screen.height)
+      await ipcService.moveMouse(targetX * screen.width, targetY * screen.height, screenIndex)
     }
 
     frameRef.current = window.requestAnimationFrame((time) => {
@@ -77,10 +83,11 @@ export const useMouseControl = (
 
     return () => {
       cancelled = true
+      window.removeEventListener('focus', onFocus)
       if (frameRef.current !== null) {
         window.cancelAnimationFrame(frameRef.current)
         frameRef.current = null
       }
     }
-  }, [enabled, minConfidence, smoothing, mouseSpeed])
+  }, [enabled, minConfidence, smoothing, mouseSpeed, screenIndex])
 }

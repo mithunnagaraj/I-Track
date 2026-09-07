@@ -1,6 +1,7 @@
 import type { AppSettings } from './ipc'
 
 export const APP_NAME = 'I-Track'
+export const APP_VERSION = '0.1.0'
 
 export const DEFAULT_SETTINGS: AppSettings = {
   trackingEnabled: true,
@@ -21,5 +22,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   headGainX: 0.6,
   headGainY: 1.6,
   invertX: true,
-  invertY: false
+  invertY: false,
+  // Phase 3 additions
+  targetFps: 30,
+  gpuAcceleration: true,
+  calibrationMode: '5-point',
+  activeProfileId: 'default',
+  autoCheckUpdates: true
 }

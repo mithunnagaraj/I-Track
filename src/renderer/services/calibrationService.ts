@@ -1,21 +1,79 @@
-import type { CalibrationMatrix, CalibrationPoint } from '../types/calibration'
+import type {
+  AccuracyTestResult,
+  CalibrationGridMode,
+  CalibrationMatrix,
+  CalibrationPoint,
+  CalibrationProfile,
+  VerificationTarget
+} from '../types/calibration'
+import { ipcService } from './ipcService'
 import { storageService } from './storageService'
 
 const STORAGE_KEY = 'i-track.calibration'
+const PROFILES_STORAGE_KEY = 'i-track.profiles'
 
 interface Point {
   x: number
   y: number
 }
 
-// 5 well-spaced targets comfortable for webcam eye-tracking
-export const CALIBRATION_TARGETS: Point[] = [
+export const CALIBRATION_TARGETS_5POINT: Point[] = [
   { x: 0.15, y: 0.15 },
   { x: 0.85, y: 0.15 },
   { x: 0.5, y: 0.5 },
   { x: 0.15, y: 0.85 },
   { x: 0.85, y: 0.85 }
 ]
+
+export const TARGET_NAMES_5POINT = [
+  '1. Top-Left',
+  '2. Top-Right',
+  '3. Center Screen',
+  '4. Bottom-Left',
+  '5. Bottom-Right'
+]
+
+export const CALIBRATION_TARGETS_9POINT: Point[] = [
+  { x: 0.15, y: 0.15 },
+  { x: 0.5, y: 0.15 },
+  { x: 0.85, y: 0.15 },
+  { x: 0.15, y: 0.5 },
+  { x: 0.5, y: 0.5 },
+  { x: 0.85, y: 0.5 },
+  { x: 0.15, y: 0.85 },
+  { x: 0.5, y: 0.85 },
+  { x: 0.85, y: 0.85 }
+]
+
+export const TARGET_NAMES_9POINT = [
+  '1. Top-Left',
+  '2. Top-Center',
+  '3. Top-Right',
+  '4. Middle-Left',
+  '5. Center Screen',
+  '6. Middle-Right',
+  '7. Bottom-Left',
+  '8. Bottom-Center',
+  '9. Bottom-Right'
+]
+
+export const VERIFICATION_TARGETS: Point[] = [
+  { x: 0.25, y: 0.25 },
+  { x: 0.75, y: 0.25 },
+  { x: 0.5, y: 0.5 },
+  { x: 0.25, y: 0.75 },
+  { x: 0.75, y: 0.75 }
+]
+
+export const VERIFICATION_TARGET_NAMES = [
+  'Test Target 1 (Upper Left)',
+  'Test Target 2 (Upper Right)',
+  'Test Target 3 (Center)',
+  'Test Target 4 (Lower Left)',
+  'Test Target 5 (Lower Right)'
+]
+
+export const CALIBRATION_TARGETS = CALIBRATION_TARGETS_5POINT
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value))
 
@@ -136,16 +194,23 @@ const computeAccuracy = (points: CalibrationPoint[], h: number[][]): number => {
 }
 
 export const calibrationService = {
+  getTargets(mode: CalibrationGridMode = '5-point'): Point[] {
+    return mode === '9-point' ? CALIBRATION_TARGETS_9POINT : CALIBRATION_TARGETS_5POINT
+  },
+  getTargetNames(mode: CalibrationGridMode = '5-point'): string[] {
+    return mode === '9-point' ? TARGET_NAMES_9POINT : TARGET_NAMES_5POINT
+  },
   startCalibration(): CalibrationPoint[] {
     return []
   },
-  finishCalibration(points: CalibrationPoint[]): CalibrationMatrix {
+  finishCalibration(points: CalibrationPoint[], gridMode: CalibrationGridMode = '5-point'): CalibrationMatrix {
     const h = computeRobustAffineMatrix(points)
     const accuracy = computeAccuracy(points, h)
     return {
       h,
       createdAt: Date.now(),
-      accuracy
+      accuracy,
+      gridMode
     }
   },
   applyCalibration(
@@ -161,24 +226,124 @@ export const calibrationService = {
   },
   async saveCalibration(matrix: CalibrationMatrix): Promise<void> {
     storageService.set(STORAGE_KEY, matrix)
-    if (window.api?.saveCalibration) {
-      await window.api.saveCalibration(matrix)
-    }
+    await ipcService.saveCalibration(matrix)
   },
   async loadCalibration(): Promise<CalibrationMatrix | null> {
-    if (window.api?.loadCalibration) {
-      const persisted = await window.api.loadCalibration()
-      if (persisted && Array.isArray(persisted.h)) {
-        storageService.set(STORAGE_KEY, persisted)
-        return persisted
-      }
+    const fromIpc = await ipcService.loadCalibration()
+    if (fromIpc && Array.isArray(fromIpc.h)) {
+      storageService.set(STORAGE_KEY, fromIpc)
+      return fromIpc
     }
     return storageService.get<CalibrationMatrix>(STORAGE_KEY)
   },
   async deleteCalibration(): Promise<void> {
     storageService.remove(STORAGE_KEY)
-    if (window.api?.deleteCalibration) {
-      await window.api.deleteCalibration()
+    await ipcService.deleteCalibration()
+  },
+
+  // Multi-Profile Management
+  async listProfiles(): Promise<CalibrationProfile[]> {
+    const ipcProfiles = await ipcService.loadProfiles()
+    if (ipcProfiles && Array.isArray(ipcProfiles) && ipcProfiles.length > 0) {
+      storageService.set(PROFILES_STORAGE_KEY, ipcProfiles)
+      return ipcProfiles
+    }
+    const local = storageService.get<CalibrationProfile[]>(PROFILES_STORAGE_KEY)
+    if (local && Array.isArray(local) && local.length > 0) {
+      return local
+    }
+    // If an existing calibration exists, seed the Default profile
+    const existing = await this.loadCalibration()
+    if (existing) {
+      const defaultProfile: CalibrationProfile = {
+        id: 'default',
+        name: 'Default Profile',
+        createdAt: existing.createdAt,
+        updatedAt: existing.createdAt,
+        gridMode: existing.gridMode ?? '5-point',
+        matrix: existing,
+        isDefault: true
+      }
+      const initial = [defaultProfile]
+      storageService.set(PROFILES_STORAGE_KEY, initial)
+      await ipcService.saveProfiles(initial)
+      return initial
+    }
+    return []
+  },
+
+  async saveProfile(profile: CalibrationProfile): Promise<CalibrationProfile[]> {
+    const profiles = await this.listProfiles()
+    const index = profiles.findIndex((p) => p.id === profile.id)
+    let updated: CalibrationProfile[]
+    if (index >= 0) {
+      updated = profiles.map((p) => (p.id === profile.id ? { ...profile, updatedAt: Date.now() } : p))
+    } else {
+      updated = [...profiles, { ...profile, createdAt: Date.now(), updatedAt: Date.now() }]
+    }
+    storageService.set(PROFILES_STORAGE_KEY, updated)
+    await ipcService.saveProfiles(updated)
+    return updated
+  },
+
+  async deleteProfile(id: string): Promise<CalibrationProfile[]> {
+    const profiles = await this.listProfiles()
+    const updated = profiles.filter((p) => p.id !== id)
+    storageService.set(PROFILES_STORAGE_KEY, updated)
+    await ipcService.saveProfiles(updated)
+    return updated
+  },
+
+  // Accuracy Verification Test
+  evaluateAccuracy(
+    samples: Array<{ targetX: number; targetY: number; gazeX: number; gazeY: number }>,
+    screenWidth = 1920,
+    screenHeight = 1080
+  ): AccuracyTestResult {
+    if (samples.length === 0) {
+      return {
+        accuracyPercentage: 0,
+        meanErrorDistance: 1,
+        meanErrorPx: 1000,
+        targets: [],
+        testedAt: Date.now(),
+        rating: 'poor'
+      }
+    }
+
+    const targets: VerificationTarget[] = samples.map((s, idx) => {
+      const errDist = Math.hypot(s.gazeX - s.targetX, s.gazeY - s.targetY)
+      const dxPx = (s.gazeX - s.targetX) * screenWidth
+      const dyPx = (s.gazeY - s.targetY) * screenHeight
+      const errPx = Math.hypot(dxPx, dyPx)
+      return {
+        id: idx + 1,
+        name: VERIFICATION_TARGET_NAMES[idx] ?? `Target ${idx + 1}`,
+        targetX: s.targetX,
+        targetY: s.targetY,
+        measuredX: s.gazeX,
+        measuredY: s.gazeY,
+        errorDistance: errDist,
+        errorPx: Math.round(errPx)
+      }
+    })
+
+    const meanDist = targets.reduce((sum, t) => sum + t.errorDistance, 0) / targets.length
+    const meanPx = targets.reduce((sum, t) => sum + (t.errorPx ?? 0), 0) / targets.length
+    const accuracyPercentage = Math.round(clamp01(1 - meanDist * 2.5) * 100)
+
+    let rating: AccuracyTestResult['rating'] = 'excellent'
+    if (accuracyPercentage < 60) rating = 'poor'
+    else if (accuracyPercentage < 75) rating = 'fair'
+    else if (accuracyPercentage < 88) rating = 'good'
+
+    return {
+      accuracyPercentage,
+      meanErrorDistance: Math.round(meanDist * 1000) / 1000,
+      meanErrorPx: Math.round(meanPx),
+      targets,
+      testedAt: Date.now(),
+      rating
     }
   }
 }

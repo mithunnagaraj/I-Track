@@ -3,6 +3,7 @@ import { estimateGaze } from '../ml/EyeGazeEstimator'
 import { FaceDetector } from '../ml/FaceDetector'
 import { MediaPipeWrapper } from '../ml/MediaPipeWrapper'
 import type { GazePoint } from '../types/gaze'
+import type { TargetFps } from '../types/ipc'
 import { OneEuroFilter2D } from '../utils/OneEuroFilter'
 
 export interface UseGazeTrackerOptions {
@@ -15,6 +16,8 @@ export interface UseGazeTrackerOptions {
   baselineY?: number
   headGainX?: number
   headGainY?: number
+  targetFps?: TargetFps
+  gpuAcceleration?: boolean
 }
 
 export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
@@ -24,6 +27,7 @@ export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
   const [error, setError] = useState<string | null>(null)
   const frameRef = useRef<number | null>(null)
   const lastTimestampRef = useRef(0)
+  const lastFrameProcessedTimeRef = useRef(0)
   const detectorRef = useRef<FaceDetector | null>(null)
   const initializationRef = useRef<Promise<void> | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -49,7 +53,9 @@ export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
     const initializeDetector = async () => {
       try {
         const detector = new FaceDetector(new MediaPipeWrapper())
-        await detector.initialize()
+        await detector.initialize({
+          gpuAcceleration: optionsRef.current.gpuAcceleration ?? true
+        })
         detectorRef.current = detector
         setIsReady(true)
       } catch (initError) {
@@ -75,43 +81,58 @@ export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
     try {
       const detector = detectorRef.current
       const video = videoRef.current
-      if (
-        detector &&
-        video &&
-        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
-        video.videoWidth > 0 &&
-        video.videoHeight > 0
-      ) {
-        const timestampMs = Math.max(lastTimestampRef.current + 1, Math.round(performance.now()))
-        lastTimestampRef.current = timestampMs
-        const detection = detector.detect(video, timestampMs)
-        if (detection) {
-          const estimated = estimateGaze(detection.landmarks, optionsRef.current)
-          if (estimated) {
-            const targetX = clamp01(estimated.x)
-            const targetY = clamp01(estimated.y)
+      const now = performance.now()
 
-            // One Euro Filter adaptively filters noise based on eye velocity:
-            // High speed (saccades) -> cutoff increases -> zero latency
-            // Low speed (fixations) -> cutoff stays low -> rock-solid jitter-free
-            const filtered = filterRef.current.filter(targetX, targetY, timestampMs)
-            const stabilizedX = clamp01(filtered.x)
-            const stabilizedY = clamp01(filtered.y)
+      // Target FPS and Battery Saver throttling
+      const targetFps = optionsRef.current.targetFps ?? 30
+      // If window is backgrounded/hidden, throttle heavily to 5 FPS to preserve CPU/battery
+      const effectiveIntervalMs = document.hidden ? 200 : 1000 / targetFps
+      const elapsedSinceLast = now - lastFrameProcessedTimeRef.current
 
-            setGazePoint({
-              x: stabilizedX,
-              y: stabilizedY,
-              rawX: estimated.rawX,
-              rawY: estimated.rawY,
-              confidence: Math.min(1, Math.max(0, estimated.confidence * (detection.confidence ?? 1))),
-              timestamp: Date.now()
-            })
-            setError(null)
+      if (elapsedSinceLast >= effectiveIntervalMs) {
+        lastFrameProcessedTimeRef.current = now
+
+        if (
+          detector &&
+          video &&
+          video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+          video.videoWidth > 0 &&
+          video.videoHeight > 0
+        ) {
+          const timestampMs = Math.max(lastTimestampRef.current + 1, Math.round(now))
+          lastTimestampRef.current = timestampMs
+          const detection = detector.detect(video, timestampMs)
+          if (detection) {
+            const estimated = estimateGaze(detection.landmarks, optionsRef.current)
+            if (estimated) {
+              const targetX = clamp01(estimated.x)
+              const targetY = clamp01(estimated.y)
+
+              // One Euro Filter adaptively filters noise based on eye velocity:
+              // High speed (saccades) -> cutoff increases -> zero latency
+              // Low speed (fixations) -> cutoff stays low -> rock-solid jitter-free
+              const filtered = filterRef.current.filter(targetX, targetY, timestampMs)
+              const stabilizedX = clamp01(filtered.x)
+              const stabilizedY = clamp01(filtered.y)
+
+              setGazePoint({
+                x: stabilizedX,
+                y: stabilizedY,
+                rawX: estimated.rawX,
+                rawY: estimated.rawY,
+                yaw: estimated.yaw,
+                pitch: estimated.pitch,
+                eyeOpenness: estimated.eyeOpenness,
+                confidence: Math.min(1, Math.max(0, estimated.confidence * (detection.confidence ?? 1))),
+                timestamp: Date.now()
+              })
+              setError(null)
+            } else {
+              setGazePoint(null)
+            }
           } else {
             setGazePoint(null)
           }
-        } else {
-          setGazePoint(null)
         }
       }
     } catch (detectError) {
@@ -137,6 +158,7 @@ export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
       return
     }
     lastTimestampRef.current = 0
+    lastFrameProcessedTimeRef.current = 0
     filterRef.current.reset()
     setIsTracking(true)
     frameRef.current = window.requestAnimationFrame(loop)
@@ -149,6 +171,7 @@ export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
       frameRef.current = null
     }
     lastTimestampRef.current = 0
+    lastFrameProcessedTimeRef.current = 0
     filterRef.current.reset()
   }, [])
 
@@ -160,6 +183,10 @@ export const useGazeTracker = (options?: UseGazeTrackerOptions) => {
     () => () => {
       if (frameRef.current !== null) {
         window.cancelAnimationFrame(frameRef.current)
+      }
+      if (detectorRef.current) {
+        detectorRef.current.dispose()
+        detectorRef.current = null
       }
     },
     []

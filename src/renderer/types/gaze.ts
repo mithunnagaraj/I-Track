@@ -5,6 +5,9 @@ export interface GazePoint {
   timestamp: number
   rawX?: number
   rawY?: number
+  yaw?: number
+  pitch?: number
+  eyeOpenness?: number
 }
 
 export interface GazeData {

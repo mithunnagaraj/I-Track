@@ -8,6 +8,7 @@ interface FaceLandmarkerLike {
     faceLandmarks?: Array<Array<{ x: number; y: number; z: number; visibility?: number }>>
     faceBlendshapes?: Array<{ categories?: Array<{ score?: number }> }>
   }
+  close?(): void
 }
 
 interface FilesetResolverLike {
@@ -48,30 +49,64 @@ const toLandmark = (value: { x: number; y: number; z: number; visibility?: numbe
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value))
 
+export interface MediaPipeInitOptions {
+  gpuAcceleration?: boolean
+}
+
 export class MediaPipeWrapper {
   private initialized = false
   private landmarker: FaceLandmarkerLike | null = null
+  private currentGpuSetting: boolean = true
 
-  async initialize(): Promise<void> {
-    if (this.initialized) return
+  async initialize(options?: MediaPipeInitOptions): Promise<void> {
+    const useGpu = options?.gpuAcceleration ?? true
+    if (this.initialized && this.currentGpuSetting === useGpu && this.landmarker !== null) {
+      return
+    }
+
+    this.dispose()
+    this.currentGpuSetting = useGpu
 
     const module = (await import('@mediapipe/tasks-vision')) as unknown as TasksVisionModule
-
     const localPaths = getLocalAssetPaths()
+    const delegate = useGpu ? 'GPU' : 'CPU'
 
     try {
       // Attempt to load offline local assets first (instant startup, no network required)
       const vision = await module.FilesetResolver.forVisionTasks(localPaths.wasmRoot)
-      this.landmarker = await module.FaceLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: localPaths.modelAssetPath },
-        runningMode: 'VIDEO',
-        numFaces: 1,
-        minFaceDetectionConfidence: 0.3,
-        minFacePresenceConfidence: 0.3,
-        minTrackingConfidence: 0.3,
-        outputFaceBlendshapes: true
-      })
-      console.log('[MediaPipeWrapper] Initialized using offline local assets.')
+      try {
+        this.landmarker = await module.FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: localPaths.modelAssetPath,
+            delegate
+          },
+          runningMode: 'VIDEO',
+          numFaces: 1,
+          minFaceDetectionConfidence: 0.3,
+          minFacePresenceConfidence: 0.3,
+          minTrackingConfidence: 0.3,
+          outputFaceBlendshapes: true
+        })
+        console.log(`[MediaPipeWrapper] Initialized offline local assets with ${delegate} delegate.`)
+      } catch (delegateErr) {
+        if (delegate === 'GPU') {
+          console.warn('[MediaPipeWrapper] GPU delegate unavailable. Falling back to CPU...', delegateErr)
+          this.landmarker = await module.FaceLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: localPaths.modelAssetPath,
+              delegate: 'CPU'
+            },
+            runningMode: 'VIDEO',
+            numFaces: 1,
+            minFaceDetectionConfidence: 0.3,
+            minFacePresenceConfidence: 0.3,
+            minTrackingConfidence: 0.3,
+            outputFaceBlendshapes: true
+          })
+        } else {
+          throw delegateErr
+        }
+      }
     } catch (offlineErr) {
       console.warn(
         '[MediaPipeWrapper] Offline assets unavailable or failed to load. Falling back to CDN...',
@@ -79,7 +114,10 @@ export class MediaPipeWrapper {
       )
       const vision = await module.FilesetResolver.forVisionTasks(CDN_WASM_ROOT)
       this.landmarker = await module.FaceLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: CDN_MODEL_ASSET_PATH },
+        baseOptions: {
+          modelAssetPath: CDN_MODEL_ASSET_PATH,
+          delegate: useGpu ? 'GPU' : 'CPU'
+        },
         runningMode: 'VIDEO',
         numFaces: 1,
         minFaceDetectionConfidence: 0.3,
@@ -87,10 +125,22 @@ export class MediaPipeWrapper {
         minTrackingConfidence: 0.3,
         outputFaceBlendshapes: true
       })
-      console.log('[MediaPipeWrapper] Initialized using remote CDN assets.')
+      console.log(`[MediaPipeWrapper] Initialized using remote CDN assets with ${useGpu ? 'GPU' : 'CPU'} delegate.`)
     }
 
     this.initialized = true
+  }
+
+  dispose(): void {
+    if (this.landmarker && typeof this.landmarker.close === 'function') {
+      try {
+        this.landmarker.close()
+      } catch (err) {
+        console.warn('[MediaPipeWrapper] Error closing landmarker:', err)
+      }
+    }
+    this.landmarker = null
+    this.initialized = false
   }
 
   isReady(): boolean {
